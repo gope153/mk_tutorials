@@ -1,0 +1,262 @@
+# how to create a set of images and train tensorflow on it for object_detection
+
+## installation
+
+i have found that you can use tensorflow in two ways. either compile everything on your machine or use a preconfigured on aws, google cloud or whatever. The installation of tf on the own computer is described on the tensorflow website or here in their models. https://github.com/tensorflow/models/blob/master/research/object_detection/g3doc/installation.md
+
+i use a google cloud machine which is setup at google cloud computing. just search for pre-configured tensorflow and use the AISE GPU tensorflow production ready. 
+
+## configure the machine
+
+connect via ssh and then you have to do a little bit stuff. if you want to connect via sftp create a user and allow passwort authentication 
+
+```
+sudo passwd username
+sudo vi /etc/ssh/sshd_config
+
+```
+
+then set password authentication to yes and save this esc > :wq > enter
+
+afterwords go to home and clone git 
+
+```
+mkdir projects
+cd projects
+git clone https://github.com/tensorflow/models.git
+cd models
+cd research
+```
+
+then do this code:
+
+`sudo apt-get install protobuf-compiler python-pil python-lxml python-tk` 
+
+enter y and click enter
+
+then 
+
+```
+pip install --user Cython
+pip install --user contextlib2
+pip install --user jupyter
+pip install --user matplotlib
+git clone https://github.com/cocodataset/cocoapi.git
+cd cocoapi/PythonAPI
+make
+cp -r pycocotools ~/projects/models/research/
+cd -
+protoc object_detection/protos/*.proto --python_out=.
+pip install pillow
+export PYTHONPATH=$PYTHONPATH:`pwd`:`pwd`/slim
+python object_detection/builders/model_builder_test.py
+```
+
+u r done and it should say ok :) you have to make slight changes in model_lib.py and model_main.py. on the first one change category_index.values() to list(category_index.values()) and on model_main.py just for logging insert this after import tf.logging.set_verbosity(tf.logging.INFO) and replace config with config = tf.estimator.RunConfig(model_dir=FLAGS.model_dir, log_step_count_steps=1) to see more steps
+
+## train the images
+
+get labelimg and afterwards take images how you like and just use the folder structure 
+
++ imageset
+  + class
+    - image1.png
+    - image2.png
+  - image1.xml
+  - image2.xml
+
+which is done by labelimg. Afterwards get my createXML and insert it under imageset and please set the class also in the classfolder. so dont name it class as in the structure above, name it eg banana if you train bananas. you now have to insert the classes you have in the generate.py and generate-test.py  in line 32 and following. out of the commands you will get the label.pbtxt where it stands all the classes you will insert the order or how they are populated. just look into your label.pbtxt. then insert more rows for each class so they are put to a number. then do 
+
+`node index.js --set=banana`
+
+and click s for save after the output stops. then wait until ready. 
+you can use more than one class here, just insert different classes. if you insert a picture with more than one class it works as well. 
+
+it creates a folder in readyset with tf records and label.pbtxt for testing and training.
+
+copy the folder into training or data or model in models/research/object_detection of the clone on your machine from tensorflow. 
+
+# configure the config and download the model
+
+choose any model from https://github.com/tensorflow/models/tree/master/research/object_detection and download it and unpack it in the main object_detection folder.
+
+then get a config file which suits basically what you downloaded. you can get a config from samples/configs and for example choose faster_rcnn_resnet101_coco.config when you work with the faster_rcnn_resnet101_coco model from download. 
+
+Copy the config and rename the copy at the end with your new model. For example you trained 2 classes then you change classesnumber at top to 2. afterwards just set the path below to the .pbtxt and the records and the model checkpoint in your chosen model. its called PATH_TO_BE_CONFIGURED
+
+then you should be good to go to train. 
+
+## train the model
+
+`python object_detection/model_main.py --pipeline_config_path=PATH_TO_CONFIG --model_dir=PATH_TO_NEW_CREATED_MODEL --num_train_steps=15000 --sample_1_of_n_eval_examples=1 --alsologtostderr`
+
+it starts and after 15000 steps it stops if you want to you can see the outcome on a tensorboard 
+
+`tensorboard --logdir=PATH_TO_NEW_CREATED_MODEL`
+
+afterwards 
+
+`python export_inference_graph.py --input_type image_tensor --pipeline_config_path PATH_TO_CONFIG --trained_checkpoint_prefix PATH_TO_NEW_CREATED_MODEL/model.ckpt-XXXX --output_directory inference_graph`
+
+this exported the graph. graphs are are the "models" you trained which you can work with. 
+
+Afterwards you can just test the model. herefore you go to demo.py which you should create, or copy from below. put the sample images to test_images and name them image1 to imageN and then put the graph to inference_graph/ and replace the existing one. then just start demo.py and wait until output_img gets filled with the test images. you can modify demo.py or write your own to get different output or use it otherwise. 
+
+helpful: if you are on google cloud virtual machine it tooks long to download with winscp. create a bucket and then you can push the stuff to the bucket with
+
+`gsutil cp GRAPHPATH gs://{BUCKETNAME}/{CREATEFOLDERTHEGRAPH}`
+
+Here is demo.py 
+
+```
+import numpy as np
+import os
+import six.moves.urllib as urllib
+import sys
+import tarfile
+import tensorflow as tf
+import zipfile
+
+from distutils.version import StrictVersion
+from collections import defaultdict
+from io import StringIO
+from matplotlib import pyplot as plt
+from PIL import Image
+
+# This is needed since the notebook is stored in the object_detection folder.
+sys.path.append("..")
+from object_detection.utils import ops as utils_ops
+
+if StrictVersion(tf.__version__) < StrictVersion('1.9.0'):
+  raise ImportError('Please upgrade your TensorFlow installation to v1.9.* or later!')
+
+
+from utils import label_map_util
+
+from utils import visualization_utils as vis_util
+
+
+# What model to download.
+# MODEL_NAME = 'faster_rcnn_nas_coco_2018_01_28'
+# MODEL_FILE = MODEL_NAME + '.tar.gz'
+# DOWNLOAD_BASE = 'http://download.tensorflow.org/models/object_detection/'
+
+# Path to frozen detection graph. This is the actual model that is used for the object detection.
+PATH_TO_FROZEN_GRAPH =  'inference_graph/frozen_inference_graph.pb'
+
+# List of the strings that is used to add correct label for each box.
+PATH_TO_LABELS = os.path.join('train', 'labels-banana_scissor.pbtxt')
+
+
+
+# opener = urllib.request.URLopener()
+# opener.retrieve(DOWNLOAD_BASE + MODEL_FILE, MODEL_FILE)
+# # tar_file = tarfile.open(MODEL_FILE)
+# for file in tar_file.getmembers():
+#   file_name = os.path.basename(file.name)
+#   if 'frozen_inference_graph.pb' in file_name:
+#     tar_file.extract(file, os.getcwd())
+
+
+detection_graph = tf.Graph()
+with detection_graph.as_default():
+  od_graph_def = tf.GraphDef()
+  with tf.gfile.GFile(PATH_TO_FROZEN_GRAPH, 'rb') as fid:
+    serialized_graph = fid.read()
+    od_graph_def.ParseFromString(serialized_graph)
+    tf.import_graph_def(od_graph_def, name='')
+
+
+
+category_index = label_map_util.create_category_index_from_labelmap(PATH_TO_LABELS, use_display_name=True)
+
+def load_image_into_numpy_array(image):
+  (im_width, im_height) = image.size
+  return np.array(image.getdata()).reshape(
+      (im_height, im_width, 3)).astype(np.uint8)
+
+
+# For the sake of simplicity we will use only 2 images:
+# image1.jpg
+# image2.jpg
+# If you want to test the code with your images, just add path to the images to the TEST_IMAGE_PATHS.
+PATH_TO_TEST_IMAGES_DIR = 'test_images'
+TEST_IMAGE_PATHS = [ os.path.join(PATH_TO_TEST_IMAGES_DIR, 'image{}.jpg'.format(i)) for i in range(1, 34) ]
+
+# Size, in inches, of the output images.
+IMAGE_SIZE = (12, 8)
+	
+
+def run_inference_for_single_image(image, graph):
+  with graph.as_default():
+    with tf.Session() as sess:
+      # Get handles to input and output tensors
+      ops = tf.get_default_graph().get_operations()
+      all_tensor_names = {output.name for op in ops for output in op.outputs}
+      tensor_dict = {}
+      for key in [
+          'num_detections', 'detection_boxes', 'detection_scores',
+          'detection_classes', 'detection_masks'
+      ]:
+        tensor_name = key + ':0'
+        if tensor_name in all_tensor_names:
+          tensor_dict[key] = tf.get_default_graph().get_tensor_by_name(
+              tensor_name)
+      if 'detection_masks' in tensor_dict:
+        # The following processing is only for single image
+        detection_boxes = tf.squeeze(tensor_dict['detection_boxes'], [0])
+        detection_masks = tf.squeeze(tensor_dict['detection_masks'], [0])
+        # Reframe is required to translate mask from box coordinates to image coordinates and fit the image size.
+        real_num_detection = tf.cast(tensor_dict['num_detections'][0], tf.int32)
+        detection_boxes = tf.slice(detection_boxes, [0, 0], [real_num_detection, -1])
+        detection_masks = tf.slice(detection_masks, [0, 0, 0], [real_num_detection, -1, -1])
+        detection_masks_reframed = utils_ops.reframe_box_masks_to_image_masks(
+            detection_masks, detection_boxes, image.shape[0], image.shape[1])
+        detection_masks_reframed = tf.cast(
+            tf.greater(detection_masks_reframed, 0.5), tf.uint8)
+        # Follow the convention by adding back the batch dimension
+        tensor_dict['detection_masks'] = tf.expand_dims(
+            detection_masks_reframed, 0)
+      image_tensor = tf.get_default_graph().get_tensor_by_name('image_tensor:0')
+
+      # Run inference
+      output_dict = sess.run(tensor_dict,
+                             feed_dict={image_tensor: np.expand_dims(image, 0)})
+
+      # all outputs are float32 numpy arrays, so convert types as appropriate
+      output_dict['num_detections'] = int(output_dict['num_detections'][0])
+      output_dict['detection_classes'] = output_dict[
+          'detection_classes'][0].astype(np.uint8)
+      output_dict['detection_boxes'] = output_dict['detection_boxes'][0]
+      output_dict['detection_scores'] = output_dict['detection_scores'][0]
+      if 'detection_masks' in output_dict:
+        output_dict['detection_masks'] = output_dict['detection_masks'][0]
+  return output_dict
+
+index=0
+for image_path in TEST_IMAGE_PATHS:
+  index +=1
+  image = Image.open(image_path)
+  # the array based representation of the image will be used later in order to prepare the
+  # result image with boxes and labels on it.
+  image_np = load_image_into_numpy_array(image)
+  # Expand dimensions since the model expects images to have shape: [1, None, None, 3]
+  image_np_expanded = np.expand_dims(image_np, axis=0)
+  # Actual detection.
+  output_dict = run_inference_for_single_image(image_np, detection_graph)
+  # Visualization of the results of a detection.
+  vis_util.visualize_boxes_and_labels_on_image_array(
+      image_np,
+      output_dict['detection_boxes'],
+      output_dict['detection_classes'],
+      output_dict['detection_scores'],
+      category_index,
+      instance_masks=output_dict.get('detection_masks'),
+      use_normalized_coordinates=True,
+      line_thickness=8)
+  plt.figure(figsize=IMAGE_SIZE)
+  plt.imshow(image_np)
+  plt.savefig('output_imgs/'+ str(index) + '_.png')
+
+print('im ready')
+```
